@@ -77,22 +77,98 @@ function validateScore(body) {
 // 헬스체크
 app.get("/", (req, res) => res.json({ ok: true, service: "kovas-patch-runner-ranking" }));
 
+// 이름 정규화(중복 검사 기준): 앞뒤 공백 제거 + 내부 공백 제거 + 소문자화
+// → "홍길동", "홍길동 ", "홍 길동", "HONG" 등의 사소한 차이를 같은 이름으로 취급
+function normName(s) {
+  return String(s || "").trim().replace(/\s+/g, "").toLowerCase();
+}
+
+// [이름 중복 확인]  GET /check-name?name=홍길동
+//   응답: { ok:true, available:true|false }
+app.get("/check-name", async (req, res) => {
+  const name = String(req.query.name || "").trim().slice(0, 20);
+  const key = normName(name);
+  if (!key) return res.status(400).json({ ok: false, error: "이름이 비었습니다." });
+  try {
+    const { rows } = await pool.query(`SELECT 1 FROM players WHERE name_key = $1`, [key]);
+    res.json({ ok: true, available: rows.length === 0 });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "확인 실패" });
+  }
+});
+
+// [이름 등록]  POST /register   body: { name }
+//   먼저 쓴 사람이 임자(선착순 고유). 이미 있으면 거부.
+app.post("/register", async (req, res) => {
+  const name = String(req.body.name || "").trim().slice(0, 20);
+  const key = normName(name);
+  if (!key) return res.status(400).json({ ok: false, error: "이름을 입력해주세요." });
+  if (name.length < 2) return res.status(400).json({ ok: false, error: "이름이 너무 짧습니다." });
+  try {
+    await pool.query(`INSERT INTO players (name, name_key) VALUES ($1, $2)`, [name, key]);
+    res.json({ ok: true, name });
+  } catch (e) {
+    // 고유 인덱스 위반 = 이미 등록된 이름
+    if (e.code === "23505") return res.json({ ok: false, taken: true, error: "이미 등록된 이름입니다." });
+    console.error(e);
+    res.status(500).json({ ok: false, error: "등록 실패" });
+  }
+});
+
 // [점수 저장]  POST /score
 //   body: { player_name, distance, uv_blocked, wrinkle_filled, play_seconds }
+//   - 등록된 이름만 허용
+//   - 주 1회 제한: 그 이름으로 이번 주 이미 기록이 있으면 거부
 app.post("/score", async (req, res) => {
   const v = validateScore(req.body);
   if (!v.ok) return res.status(400).json({ ok: false, error: v.why });
   try {
+    const key = normName(v.name);
+    // 등록된 이름인지 확인
+    const reg = await pool.query(`SELECT name FROM players WHERE name_key = $1`, [key]);
+    if (!reg.rows.length) {
+      return res.status(400).json({ ok: false, needRegister: true, error: "등록되지 않은 이름입니다." });
+    }
+    const officialName = reg.rows[0].name;   // 등록 당시 원래 표기 사용
     const week = currentWeekStart();
+    // 주 1회 제한: 이번 주에 이미 기록이 있는지
+    const dup = await pool.query(
+      `SELECT 1 FROM scores WHERE player_name = $1 AND week_start = $2 LIMIT 1`,
+      [officialName, week]
+    );
+    if (dup.rows.length) {
+      return res.status(409).json({ ok: false, alreadyPlayed: true, error: "이번 주는 이미 참여하셨습니다." });
+    }
     await pool.query(
       `INSERT INTO scores (player_name, distance, uv_blocked, wrinkle_filled, play_seconds, week_start)
        VALUES ($1,$2,$3,$4,$5,$6)`,
-      [v.name, v.distance, v.uv, v.wr, v.secs, week]
+      [officialName, v.distance, v.uv, v.wr, v.secs, week]
     );
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok: false, error: "저장 실패" });
+  }
+});
+
+// [이번 주 참여 여부]  GET /played?name=홍길동
+//   응답: { ok:true, played:true|false }  — 게임이 시작 전에 확인해 막을 수 있음
+app.get("/played", async (req, res) => {
+  const key = normName(req.query.name);
+  if (!key) return res.json({ ok: true, played: false });
+  try {
+    const reg = await pool.query(`SELECT name FROM players WHERE name_key = $1`, [key]);
+    if (!reg.rows.length) return res.json({ ok: true, played: false });
+    const week = currentWeekStart();
+    const { rows } = await pool.query(
+      `SELECT 1 FROM scores WHERE player_name = $1 AND week_start = $2 LIMIT 1`,
+      [reg.rows[0].name, week]
+    );
+    res.json({ ok: true, played: rows.length > 0 });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "확인 실패" });
   }
 });
 
