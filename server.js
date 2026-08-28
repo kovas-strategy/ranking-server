@@ -14,12 +14,21 @@ const { Pool } = require("pg");
 const app = express();
 app.use(express.json());
 
-// ── CORS: 게임 웹(GitHub Pages)에서의 요청만 허용 ───────────────────
-// ★ ALLOW_ORIGIN 환경변수에 실제 게임 주소를 넣으세요.
-//   예: https://new-kovas.github.io   (경로 없이 도메인만)
+// ── CORS: 게임 웹에서의 요청만 허용 ─────────────────────────────────
+// ★ ALLOW_ORIGIN 환경변수에 허용할 주소를 넣으세요.
+//   여러 개면 쉼표로 구분: https://new-kovas.github.io,https://trend.kovas.co.kr
+//   "*" 하나면 모든 주소 허용.
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*";
+const ALLOW_LIST = ALLOW_ORIGIN.split(",").map(s => s.trim()).filter(Boolean);
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", ALLOW_ORIGIN);
+  const origin = req.headers.origin;
+  if (ALLOW_LIST.includes("*")) {
+    res.header("Access-Control-Allow-Origin", "*");
+  } else if (origin && ALLOW_LIST.includes(origin)) {
+    // 요청한 주소가 허용 목록에 있으면 그 주소를 그대로 허용(여러 도메인 대응)
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+  }
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.sendStatus(204);
