@@ -13,6 +13,15 @@ const { Pool } = require("pg");
 
 const app = express();
 app.use(express.json());
+// sendBeacon(페이지 종료 시 0m 전송)은 text/plain으로 오므로 함께 파싱
+app.use(express.text({ type: ["text/plain"] }));
+app.use((req, res, next) => {
+  // text/plain으로 온 JSON 문자열을 객체로 변환
+  if (typeof req.body === "string" && req.body.length) {
+    try { req.body = JSON.parse(req.body); } catch (e) { /* 무시 */ }
+  }
+  next();
+});
 
 // ── CORS: 게임 웹에서의 요청만 허용 ─────────────────────────────────
 // ★ ALLOW_ORIGIN 환경변수에 허용할 주소를 넣으세요.
@@ -44,14 +53,20 @@ const pool = new Pool({
 
 // ── 유틸: 이번 주 '토요일'(주 시작일) 구하기 ─────────────────────────
 // 게임 주간은 토요일 시작 ~ 다음주 금요일 마감(금요일 15시 발표) 기준.
+// ── 유틸: 주 시작일(금요일 15시 KST 기준) ────────────────────────────
+// 한 주기 = 금요일 15:00 ~ 다음 금요일 15:00 (KST).
+// 금요일 15시에 그 주가 마감되며 동시에 위너 선정 → 억울한 구간 없음.
+// 반환값: 그 주기가 시작된 '금요일'의 날짜(YYYY-MM-DD).
 function currentWeekStart() {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 3600 * 1000); // KST
-  const day = kst.getUTCDay();            // 0=일 1=월 … 6=토
-  const daysSinceSat = (day + 1) % 7;     // 토요일로부터 며칠 지났나
-  const sat = new Date(kst);
-  sat.setUTCDate(kst.getUTCDate() - daysSinceSat);
-  return sat.toISOString().slice(0, 10);  // YYYY-MM-DD
+  const day = kst.getUTCDay();            // 0=일 … 5=금 … 6=토
+  const hour = kst.getUTCHours();         // KST 시(0~23)
+  let daysSinceFri = (day - 5 + 7) % 7;   // 금요일로부터 며칠 지났나
+  if (day === 5 && hour < 15) daysSinceFri = 7; // 금요일 15시 이전이면 지난 금요일 기준
+  const start = new Date(kst);
+  start.setUTCDate(kst.getUTCDate() - daysSinceFri);
+  return start.toISOString().slice(0, 10);
 }
 
 // ── 부정 점수 방어(간단 검증) ───────────────────────────────────────
@@ -229,12 +244,14 @@ app.get("/winners", async (req, res) => {
   }
 });
 
-// [주간 마감 → 위너 확정]  POST /close-week
-//   매주 금요일 15시에 '그 주 1등'을 weekly_winners에 박제.
+// [주간 마감 → 위너 확정]  POST /close-week  또는  GET /close-week
+//   매주 금요일 15시(KST)에 '그 주 1등'을 weekly_winners에 박제.
 //   ★ 아무나 호출하면 안 되므로 ADMIN_KEY로 보호.
-//   body: { admin_key }
-app.post("/close-week", async (req, res) => {
-  if (!process.env.ADMIN_KEY || req.body.admin_key !== process.env.ADMIN_KEY) {
+//   - POST: body { admin_key }
+//   - GET/POST 공통: 헤더 X-Admin-Key 로도 인증 가능 (Cron에서 curl 호출 편의)
+async function handleCloseWeek(req, res) {
+  const key = req.headers["x-admin-key"] || (req.body && req.body.admin_key);
+  if (!process.env.ADMIN_KEY || key !== process.env.ADMIN_KEY) {
     return res.status(403).json({ ok: false, error: "권한 없음" });
   }
   try {
@@ -265,7 +282,9 @@ app.post("/close-week", async (req, res) => {
     console.error(e);
     res.status(500).json({ ok: false, error: "마감 실패" });
   }
-});
+}
+app.post("/close-week", handleCloseWeek);
+app.get("/close-week", handleCloseWeek);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Ranking API listening on " + PORT));
