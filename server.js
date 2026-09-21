@@ -81,12 +81,13 @@ function validateScore(body) {
   if (!name) return { ok: false, why: "이름이 없습니다." };
   if (!isFinite(distance) || distance < 0) return { ok: false, why: "거리 값이 이상합니다." };
 
-  // 이론상 한계(완벽 플레이 ~912m)에 여유를 둬서 1200m 초과는 거부
-  if (distance > 1200) return { ok: false, why: "비정상적으로 높은 점수입니다." };
+  // 거리는 플레이 시간에 비례해 계속 늘 수 있다(속도가 지속 상승).
+  //   명백한 조작만 막도록 상한을 넉넉히 둔다.
+  if (distance > 100000) return { ok: false, why: "비정상적으로 높은 점수입니다." };
 
-  // 플레이 시간 대비 거리: 게임 속도상 초당 최대 약 12m 정도.
-  //   여유를 둬서 초당 20m 초과면 거부(0초 보고는 통과시키되 상한만 검사)
-  if (secs > 0 && distance / secs > 20) return { ok: false, why: "시간 대비 거리가 비정상입니다." };
+  // 시간 대비 거리: 게임 후반 가속 상태에서는 순간 70m/s 이상, 평균도 40m/s를 넘을 수 있다.
+  //   정상 플레이를 막지 않도록 초당 150m를 상한으로 둔다(명백한 조작만 차단).
+  if (secs > 0 && distance / secs > 150) return { ok: false, why: "시간 대비 거리가 비정상입니다." };
 
   // 음수/과도한 카운트 방어
   if (uv < 0 || wr < 0 || uv > 100000 || wr > 100000) return { ok: false, why: "카운트 값이 이상합니다." };
